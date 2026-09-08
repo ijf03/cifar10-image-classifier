@@ -1,4 +1,4 @@
-"""Train a small CPU CNN on 5,000 CIFAR-10 images; test on 1,000.
+"""Train a small CPU CNN on 50,000 CIFAR-10 images; test on 10,000.
 
 Run inside the Nix shell: python train.py --epochs 5
 Torchvision downloads the full official archive (not Kaggle) to ./data once.
@@ -28,22 +28,24 @@ def balanced_subset(dataset, images_per_class, seed):
 
 def make_model():
     return nn.Sequential(
-        nn.Conv2d(3, 16, kernel_size=3, padding=1),
+        nn.Conv2d(3, 32, kernel_size=3, padding=1),
+        nn.BatchNorm2d(32),
         nn.ReLU(),
         nn.MaxPool2d(2),
-        nn.Conv2d(16, 32, kernel_size=3, padding=1),
+        nn.Conv2d(32, 64, kernel_size=3, padding=1),
+        nn.BatchNorm2d(64),
         nn.ReLU(),
         nn.MaxPool2d(2),
         nn.Flatten(),
-        nn.Linear(32 * 8 * 8, 64),
+        nn.Linear(64 * 8 * 8, 128),
         nn.ReLU(),
-        nn.Linear(64, 10),  # Raw scores for CrossEntropyLoss; no softmax needed.
+        nn.Linear(128, 10),  # Raw scores for CrossEntropyLoss; no softmax needed.
     )
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--seed", type=int, default=42)
@@ -55,32 +57,49 @@ def main():
     torch.manual_seed(args.seed)
     # A small CPU model benefits from avoiding excessive thread overhead.
     torch.set_num_threads(min(4, torch.get_num_threads()))
-    transform = transforms.Compose([
+    train_transform = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        transforms.Normalize(
+            (0.4914, 0.4822, 0.4465),
+            (0.2470, 0.2435, 0.2616),
+        ),
+    ])
+    test_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(
+            (0.4914, 0.4822, 0.4465),
+            (0.2470, 0.2435, 0.2616),
+        ),
     ])
     print("Downloading/checking the full CIFAR-10 archive in", args.data_dir, flush=True)
     train_data = datasets.CIFAR10(
-        root=args.data_dir, train=True, download=True, transform=transform
+        root=args.data_dir, train=True, download=True, transform=train_transform
     )
     test_data = datasets.CIFAR10(
-        root=args.data_dir, train=False, download=True, transform=transform
+        root=args.data_dir, train=False, download=True, transform=test_transform
     )
-    train_loader = DataLoader(
-        balanced_subset(train_data, 500, args.seed), #500 images per category
+    train_loader = DataLoader( 
+        balanced_subset(train_data, 5000, args.seed), #5,000
         batch_size=args.batch_size, shuffle=True,
         generator=torch.Generator().manual_seed(args.seed),
     )
     test_loader = DataLoader(
-        balanced_subset(test_data, 100, args.seed), #100 images per category
+        balanced_subset(test_data, 1000, args.seed), #1,000 images per category
         batch_size=args.batch_size, shuffle=False,
     )
-    print("Using 5,000 training images and 1,000 test images on CPU.")
+    print("Using 50,000 training images and 10,000 test images on CPU.")
     print("Classes:", ", ".join(train_data.classes))
 
     model = make_model()
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=0.001, weight_decay=0.0001
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.epochs
+    )
 
     for epoch in range(args.epochs):
         model.train()
@@ -100,6 +119,7 @@ def main():
             f"loss={total_loss / count:.4f}, train accuracy={correct / count:.1%}",
             flush=True,
         )
+        scheduler.step()
 
     model.eval()
     correct = 0
@@ -115,8 +135,8 @@ def main():
         "classes": train_data.classes,
         "seed": args.seed,
         "epochs": args.epochs,
-        "normalization_mean": (0.5, 0.5, 0.5),
-        "normalization_std": (0.5, 0.5, 0.5),
+        "normalization_mean": (0.4914, 0.4822, 0.4465),
+        "normalization_std": (0.2470, 0.2435, 0.2616),
     }, args.output)
     print(f"Saved model to {args.output}")
 
