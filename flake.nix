@@ -13,11 +13,16 @@
 			python = pkgs.python3.withPackages (ps: with ps; [
 				torch
 				torchvision
+				onnx
+				onnxscript
 			]);
 		in
 		{
 			devShells.${system}.default = pkgs.mkShell {
-				packages = [ python ];
+				packages = [ 
+					python
+					pkgs.nodejs_22
+				];
 			};
 		};
 }
